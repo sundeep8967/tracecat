@@ -30,7 +30,7 @@ from tracecat.auth.types import Role
 from tracecat.authz.scopes import SERVICE_PRINCIPAL_SCOPES
 from tracecat.dsl.common import create_default_execution_context
 from tracecat.dsl.schemas import ActionStatement, RunActionInput, RunContext
-from tracecat.dsl.types import ActionErrorInfo, ActionErrorInfoAdapter
+from tracecat.dsl.types import ActionErrorInfo
 from tracecat.exceptions import (
     EntitlementRequired,
     ExecutionError,
@@ -497,7 +497,7 @@ class TestExecuteActionActivity:
             assert app_error.type == RuntimeErrorKind.TENANT_ENTITLEMENT_DENIED.value
             assert app_error.non_retryable is True
             assert len(app_error.details) > 0
-            detail = ActionErrorInfoAdapter.validate_python(app_error.details[0])
+            detail = ActionErrorInfo.model_validate(app_error.details[0])
             assert isinstance(detail, ActionErrorInfo)
             assert "custom_registry" in detail.message
             envelope = extract_error_envelope(app_error)
@@ -593,9 +593,7 @@ class TestExecuteActionActivity:
             # The ActionErrorInfo in details should have the stream_id
             app_error = exc_info.value
             assert len(app_error.details) > 0
-            action_error_info = ActionErrorInfoAdapter.validate_python(
-                app_error.details[0]
-            )
+            action_error_info = ActionErrorInfo.model_validate(app_error.details[0])
             assert isinstance(action_error_info, ActionErrorInfo)
             assert action_error_info.stream_id == "test-stream-123"
 

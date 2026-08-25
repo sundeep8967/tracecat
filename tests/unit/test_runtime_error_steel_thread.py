@@ -322,7 +322,7 @@ def test_child_failure_aggregate_is_terminal_and_keeps_loop_indexes() -> None:
     )
 
     assert error.non_retryable is True
-    aggregate = ActionErrorInfoAdapter.validate_python(error.details[0])
+    aggregate = ActionErrorInfo.model_validate(error.details[0])
     assert aggregate.envelope is not None
     assert aggregate.children is not None
     assert [child.ref for child in aggregate.children] == ["fanout[7]"]

@@ -3649,58 +3649,47 @@ def assert_error_handler_initiated_correctly(
         if isinstance(group.action_input.trigger_inputs, InlineObject)
         else group.action_input.trigger_inputs
     )
+    expected_error_message = (
+        "There was an error in the executor when calling action 'core.transform.reshape'.\n\n"
+        "\n"
+        "TracecatExpressionError: Error evaluating expression `1/0`\n\n"
+        "[evaluator] Evaluation failed at node:\n"
+        "```\n"
+        "div_op\n"
+        "  literal\t1\n"
+        "  literal\t0\n\n"
+        "```\n"
+        'Reason: Error trying to process rule "div_op":\n\n'
+        "Cannot divide by zero\n\n"
+        "\n"
+        "------------------------------\n"
+        "File: /app/tracecat/expressions/core.py\n"
+        "Function: result\n"
+        "Line: 77"
+    )
     assert normalize_error_line_numbers(trigger_data) == normalize_error_line_numbers(
         {
             "errors": [
                 {
                     "attempt": 1,
                     "expr_context": "ACTIONS",
-                    "message": (
-                        "There was an error in the executor when calling action 'core.transform.reshape'.\n\n"
-                        "\n"
-                        "TracecatExpressionError: Error evaluating expression `1/0`\n\n"
-                        "[evaluator] Evaluation failed at node:\n"
-                        "```\n"
-                        "div_op\n"
-                        "  literal\t1\n"
-                        "  literal\t0\n\n"
-                        "```\n"
-                        'Reason: Error trying to process rule "div_op":\n\n'
-                        "Cannot divide by zero\n\n"
-                        "\n"
-                        "------------------------------\n"
-                        "File: /app/tracecat/expressions/core.py\n"
-                        "Function: result\n"
-                        "Line: 77"
-                    ),
+                    "message": expected_error_message,
                     "ref": "failing_action",
                     "type": "ExecutionError",
                     "stream_id": "<root>:0",
                     "children": None,
+                    "envelope": {
+                        "schema": "tracecat.error.v1",
+                        "kind": "action.execution.failed",
+                        "owner": "user",
+                        "retry_disposition": "retryable",
+                        "cause_type": "ExecutionError",
+                        "message": expected_error_message,
+                    },
                 }
             ],
             "handler_wf_id": str(WorkflowUUID.new(handler_wf.id)),
-            "message": (
-                "Workflow failed with 1 error(s)\n\n"
-                f"{'=' * 10} (1/1) ACTIONS.failing_action {'=' * 10}\n\n"
-                "ExecutionError: [ACTIONS.failing_action -> execute_action] (Attempt 1)\n\n"
-                "There was an error in the executor when calling action 'core.transform.reshape'.\n\n"
-                "\n"
-                "TracecatExpressionError: Error evaluating expression `1/0`\n\n"
-                "[evaluator] Evaluation failed at node:\n"
-                "```\n"
-                "div_op\n"
-                "  literal\t1\n"
-                "  literal\t0\n\n"
-                "```\n"
-                'Reason: Error trying to process rule "div_op":\n\n'
-                "Cannot divide by zero\n\n"
-                "\n"
-                "------------------------------\n"
-                "File: /app/tracecat/expressions/core.py\n"
-                "Function: result\n"
-                "Line: 77"
-            ),
+            "message": expected_error_message,
             "orig_wf_exec_id": failing_wf_exec_id,
             "orig_wf_exec_url": wf_exec_url,
             "orig_wf_title": "Division by zero",
