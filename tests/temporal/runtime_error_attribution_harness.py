@@ -32,7 +32,12 @@ from tracecat.dsl.common import (
     DSLRunArgs,
     PreparedSubflowResult,
 )
-from tracecat.dsl.enums import FailStrategy, PlatformAction, WaitStrategy
+from tracecat.dsl.enums import (
+    FailStrategy,
+    PlatformAction,
+    StreamErrorHandlingStrategy,
+    WaitStrategy,
+)
 from tracecat.dsl.init_activities import (
     resolve_time_anchor_activity,
     resolve_workflow_concurrency_limits_enabled_activity,
@@ -41,7 +46,9 @@ from tracecat.dsl.schemas import (
     ActionRetryPolicy,
     ActionStatement,
     DSLConfig,
+    GatherArgs,
     RunActionInput,
+    ScatterArgs,
 )
 from tracecat.dsl.workflow import DSLWorkflow
 from tracecat.exceptions import EntitlementRequired, ExecutionError, LoopExecutionError
@@ -844,6 +851,82 @@ async def run_unhandled_subflow_preparation_failure_sets_platform_owner(
             with pytest.raises(WorkflowFailureError) as exc_info:
                 await handle.result()
 
+    assert diagnostic not in (await handle.fetch_history()).to_json()
+    return ScenarioObservation(
+        root=handle,
+        failure=exc_info.value,
+        attempts=prepare_subflow.await_count,
+    )
+
+
+async def run_gather_raise_preserves_platform_child_attribution(
+    env: WorkflowEnvironment,
+    test_worker_factory,
+) -> ScenarioObservation:
+    """A gather activity round-trip retains a classified stream failure."""
+    diagnostic = "gather child diagnostic must not enter history"
+    prepare_subflow = AsyncMock(side_effect=RuntimeError(diagnostic))
+    run_args = DSLRunArgs(
+        role=_role(),
+        wf_id=WorkflowUUID.new_uuid4(),
+        dsl=DSLInput(
+            title="Classified gather failure",
+            description="Exercise classified errors across a gather activity",
+            entrypoint=DSLEntrypoint(ref="scatter"),
+            actions=[
+                ActionStatement(
+                    ref="scatter",
+                    action="core.transform.scatter",
+                    args=ScatterArgs(collection=[1]).model_dump(),
+                ),
+                ActionStatement(
+                    ref="call_child",
+                    action="core.workflow.execute",
+                    depends_on=["scatter"],
+                    args={"workflow_alias": "missing-child"},
+                ),
+                ActionStatement(
+                    ref="gather",
+                    action="core.transform.gather",
+                    depends_on=["call_child"],
+                    args=GatherArgs(
+                        items="${{ ACTIONS.call_child.result }}",
+                        error_strategy=StreamErrorHandlingStrategy.RAISE,
+                    ).model_dump(),
+                ),
+            ],
+        ),
+        trigger_inputs=InlineObject(data={"source": "inline-trigger"}),
+        registry_lock=RegistryLock(
+            origins={"tracecat_registry": "test"},
+            actions={},
+        ),
+    )
+    dsl_queue = f"runtime-error-attribution-{uuid.uuid4()}"
+
+    with patch("tracecat.dsl.action._prepare_subflow", new=prepare_subflow):
+        async with test_worker_factory(
+            env.client,
+            activities=[
+                resolve_time_anchor_activity,
+                resolve_workflow_concurrency_limits_enabled_activity,
+                action_module.DSLActivities.handle_scatter_input_activity,
+                action_module.DSLActivities.prepare_subflow_activity,
+                action_module.DSLActivities.finalize_gather_activity,
+                WorkflowsManagementService.get_error_handler_workflow_id,
+            ],
+            task_queue=dsl_queue,
+        ):
+            handle = await env.client.start_workflow(
+                DSLWorkflow.run,
+                run_args,
+                id=generate_exec_id(run_args.wf_id),
+                task_queue=dsl_queue,
+            )
+            with pytest.raises(WorkflowFailureError) as exc_info:
+                await handle.result()
+
+    assert prepare_subflow.await_count == 1, str(exc_info.value.cause)
     assert diagnostic not in (await handle.fetch_history()).to_json()
     return ScenarioObservation(
         root=handle,

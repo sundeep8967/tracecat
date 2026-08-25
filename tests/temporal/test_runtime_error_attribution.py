@@ -36,6 +36,7 @@ temporal_env = harness.env
 class _Topology(StrEnum):
     SINGLE_ACTION = "single_action"
     DEFINITION_LOOKUP = "definition_lookup"
+    SCATTER_GATHER = "scatter_gather"
     FANOUT = "fanout"
     ERROR_HANDLER = "error_handler"
     AUTHORED_ERROR_EDGE = "authored_error_edge"
@@ -416,6 +417,20 @@ ATTRIBUTION_SCENARIOS: tuple[_AttributionScenario, ...] = (
         attempts=1,
         runner=_basic_runner(
             harness.run_unhandled_subflow_preparation_failure_sets_platform_owner
+        ),
+    ),
+    _AttributionScenario(
+        id="gather.raise.preserves_platform_child",
+        topology=_Topology.SCATTER_GATHER,
+        fault_point=_FaultPoint.SUBFLOW_PREPARATION,
+        fault="RuntimeError in scattered subflow preparation",
+        root=_ExecutionExpectation(_FAILED, RuntimeErrorOwner.PLATFORM),
+        envelope_owners=frozenset({RuntimeErrorOwner.PLATFORM}),
+        kind=RuntimeErrorKind.WORKFLOW_SUBFLOW_PREPARATION_FAILED,
+        retry_disposition=RetryDisposition.RETRYABLE,
+        attempts=1,
+        runner=_basic_runner(
+            harness.run_gather_raise_preserves_platform_child_attribution
         ),
     ),
     _AttributionScenario(
