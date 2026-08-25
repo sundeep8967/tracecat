@@ -217,8 +217,8 @@ def _envelopes_from_detail(detail: Any) -> tuple[ErrorEnvelope, ...]:
             parsed = ActionErrorInfoAdapter.validate_python(value)
         except ValidationError:
             continue
-        if isinstance(parsed, ClassifiedActionErrorInfo):
-            _append_unique_envelope(envelopes, parsed.envelope)
+        for envelope in _envelopes_from_detail(parsed):
+            _append_unique_envelope(envelopes, envelope)
     return tuple(envelopes)
 
 

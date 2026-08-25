@@ -128,6 +128,9 @@ def test_aggregate_action_errors_preserve_classified_children() -> None:
     assert isinstance(parsed_aggregate.children[0], ClassifiedActionErrorInfo)
     assert parsed_aggregate.children[0].envelope == envelope
 
+    error = ApplicationError("Gather failed", {"gather": serialized_aggregate})
+    assert extract_error_envelopes(error) == (envelope,)
+
 
 def test_legacy_action_error_is_extended_without_changing_existing_fields() -> None:
     envelope = _user_envelope()
