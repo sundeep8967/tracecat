@@ -16,7 +16,6 @@ from tracecat.dsl.scheduler import _classified_action_error_info
 from tracecat.dsl.schemas import ROOT_STREAM, ActionStatement, ExecutionContext
 from tracecat.dsl.types import (
     ActionErrorInfo,
-    ActionErrorInfoAdapter,
     TaskExceptionInfo,
 )
 from tracecat.dsl.workflow import (
@@ -145,7 +144,7 @@ async def test_prepare_subflow_platform_failure_is_classified_and_history_safe()
     assert error.type == envelope.kind.value
     assert error.__cause__ is None
 
-    detail = ActionErrorInfoAdapter.validate_python(error.details[0])
+    detail = ActionErrorInfo.model_validate(error.details[0])
     assert detail.envelope == envelope
 
     failure = Failure()
@@ -363,13 +362,12 @@ def test_terminal_platform_owner_wins_for_alert_attribution() -> None:
         retry_disposition=RetryDisposition.RETRYABLE,
     )
     details = {
-        "user_action": ActionErrorInfoAdapter.dump_python(
-            _classified_error_info(user_envelope, ref="user_action"), mode="json"
-        ),
-        "platform_action": ActionErrorInfoAdapter.dump_python(
-            _classified_error_info(platform_envelope, ref="platform_action"),
-            mode="json",
-        ),
+        "user_action": _classified_error_info(
+            user_envelope, ref="user_action"
+        ).model_dump(mode="json"),
+        "platform_action": _classified_error_info(
+            platform_envelope, ref="platform_action"
+        ).model_dump(mode="json"),
     }
     error = ApplicationError("Workflow failed", details, non_retryable=True)
 
