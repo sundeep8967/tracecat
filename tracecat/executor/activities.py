@@ -9,7 +9,7 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Callable
 from datetime import timedelta
-from typing import Any
+from typing import Any, Never
 
 from temporalio import activity
 from temporalio.exceptions import ApplicationError
@@ -52,8 +52,8 @@ from tracecat.storage.object import StoredObject, action_key, get_object_storage
 from tracecat.storage.utils import is_retryable_storage_transport_error
 from tracecat.temporal.errors import (
     activity_error_boundary,
-    application_error_from_envelope,
     extract_error_envelope,
+    raise_application_error_from_envelope,
 )
 from tracecat.temporal.exceptions import UserError
 
@@ -135,7 +135,7 @@ def _result_persistence_error_envelope(error: Exception) -> ErrorEnvelope:
     )
 
 
-def _classified_executor_application_error(
+def _raise_classified_executor_application_error(
     *,
     envelope: ErrorEnvelope,
     detail_type: str,
@@ -144,16 +144,17 @@ def _classified_executor_application_error(
     stream_id: StreamID,
     details: tuple[Any, ...] = (),
     next_retry_delay: timedelta | None = None,
-) -> ApplicationError:
-    """Build the scheduler-compatible activity failure for an envelope."""
+) -> Never:
+    """Raise the scheduler-compatible activity failure for an envelope."""
     err_info = ActionErrorInfo(
         ref=ref,
         message=envelope.message,
         type=detail_type,
         attempt=attempt,
         stream_id=stream_id,
+        envelope=envelope,
     )
-    return application_error_from_envelope(
+    raise_application_error_from_envelope(
         envelope,
         err_info,
         *details,
@@ -314,7 +315,7 @@ class ExecutorActivities:
                 retry_disposition=RetryDisposition.NON_RETRYABLE,
                 cause=e,
             )
-            raise application_error_from_envelope(envelope, err_info) from None
+            raise_application_error_from_envelope(envelope, err_info)
         except EntitlementRequired as e:
             # Entitlement errors are user-facing and non-retryable
             cause_type = e.__class__.__name__
@@ -333,7 +334,7 @@ class ExecutorActivities:
                 retry_disposition=RetryDisposition.NON_RETRYABLE,
                 cause=e,
             )
-            raise application_error_from_envelope(envelope, err_info) from None
+            raise_application_error_from_envelope(envelope, err_info)
         except ExecutionError as e:
             # ExecutionError from dispatch_action (single action failure)
             cause_type = e.__class__.__name__
@@ -343,13 +344,13 @@ class ExecutorActivities:
                     error=e,
                     cause_type=envelope.cause_type,
                 )
-                raise _classified_executor_application_error(
+                _raise_classified_executor_application_error(
                     envelope=envelope,
                     detail_type=cause_type,
                     ref=task.ref,
                     attempt=act_attempt,
                     stream_id=input.stream_id,
-                ) from None
+                )
             msg = str(e)
             log.info("Execution error", error=msg, info=e.info)
             envelope = ErrorEnvelope.user(
@@ -358,13 +359,13 @@ class ExecutorActivities:
                 retry_disposition=RetryDisposition.RETRYABLE,
                 cause=e,
             )
-            raise _classified_executor_application_error(
+            _raise_classified_executor_application_error(
                 envelope=envelope,
                 detail_type=cause_type,
                 ref=task.ref,
                 attempt=act_attempt,
                 stream_id=input.stream_id,
-            ) from None
+            )
         except LoopExecutionError as e:
             # LoopExecutionError from dispatch_action (for_each loop failure)
             cause_type = e.__class__.__name__
@@ -378,13 +379,13 @@ class ExecutorActivities:
                 None,
             )
             if platform_envelope is not None:
-                raise _classified_executor_application_error(
+                _raise_classified_executor_application_error(
                     envelope=platform_envelope,
                     detail_type=cause_type,
                     ref=task.ref,
                     attempt=act_attempt,
                     stream_id=input.stream_id,
-                ) from None
+                )
             msg = str(e)
             log.info("Loop execution error", error=msg, loop_errors=e.loop_errors)
             envelope = ErrorEnvelope.user(
@@ -393,18 +394,18 @@ class ExecutorActivities:
                 retry_disposition=RetryDisposition.RETRYABLE,
                 cause=e,
             )
-            raise _classified_executor_application_error(
+            _raise_classified_executor_application_error(
                 envelope=envelope,
                 detail_type=cause_type,
                 ref=task.ref,
                 attempt=act_attempt,
                 stream_id=input.stream_id,
-            ) from None
+            )
         except ApplicationError as e:
             # Pass through ApplicationError
             log.error("ApplicationError occurred", error=e)
             if envelope := extract_error_envelope(e):
-                raise _classified_executor_application_error(
+                _raise_classified_executor_application_error(
                     envelope=envelope,
                     detail_type=e.type or e.__class__.__name__,
                     ref=task.ref,
@@ -412,7 +413,7 @@ class ExecutorActivities:
                     stream_id=input.stream_id,
                     details=tuple(e.details),
                     next_retry_delay=e.next_retry_delay,
-                ) from None
+                )
             retry_disposition = (
                 RetryDisposition.NON_RETRYABLE
                 if e.non_retryable
@@ -432,14 +433,14 @@ class ExecutorActivities:
                     retry_disposition=retry_disposition,
                     cause=e,
                 )
-            raise _classified_executor_application_error(
+            _raise_classified_executor_application_error(
                 envelope=envelope,
                 detail_type=e.type or e.__class__.__name__,
                 ref=task.ref,
                 attempt=act_attempt,
                 stream_id=input.stream_id,
                 next_retry_delay=e.next_retry_delay,
-            ) from None
+            )
         except Exception as e:
             if envelope := _platform_executor_error_envelope(e):
                 log.error(
@@ -447,13 +448,13 @@ class ExecutorActivities:
                     error=e,
                     cause_type=envelope.cause_type,
                 )
-                raise _classified_executor_application_error(
+                _raise_classified_executor_application_error(
                     envelope=envelope,
                     detail_type=e.__class__.__name__,
                     ref=task.ref,
                     attempt=act_attempt,
                     stream_id=input.stream_id,
-                ) from None
+                )
 
             cause_type = e.__class__.__name__
             log.error(
@@ -467,13 +468,13 @@ class ExecutorActivities:
                 retry_disposition=RetryDisposition.NON_RETRYABLE,
                 cause=e,
             )
-            raise _classified_executor_application_error(
+            _raise_classified_executor_application_error(
                 envelope=envelope,
                 detail_type=cause_type,
                 ref=task.ref,
                 attempt=act_attempt,
                 stream_id=input.stream_id,
-            ) from None
+            )
         finally:
             if heartbeat_task is not None:
                 heartbeat_task.cancel()

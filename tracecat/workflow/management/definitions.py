@@ -25,7 +25,7 @@ from tracecat.runtime.errors import (
 from tracecat.service import BaseWorkspaceService
 from tracecat.temporal.errors import (
     activity_error_boundary,
-    application_error_from_envelope,
+    raise_application_error_from_envelope,
 )
 from tracecat.workflow.management.schemas import (
     GetWorkflowDefinitionActivityInputs,
@@ -196,7 +196,7 @@ async def get_workflow_definition_activity(
             message="Tracecat could not load a published workflow definition",
             retry_disposition=RetryDisposition.NON_RETRYABLE,
         )
-        raise application_error_from_envelope(envelope) from None
+        raise_application_error_from_envelope(envelope)
     dsl = DSLInput(**defn.content)
     # Convert from DB dict type to RegistryLock (JSONB deserializes to dict)
     registry_lock = (

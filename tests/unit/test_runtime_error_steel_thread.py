@@ -17,14 +17,13 @@ from tracecat.dsl.schemas import ROOT_STREAM, ActionStatement, ExecutionContext
 from tracecat.dsl.types import (
     ActionErrorInfo,
     ActionErrorInfoAdapter,
-    ClassifiedActionErrorInfo,
     TaskExceptionInfo,
 )
 from tracecat.dsl.workflow import (
     ERROR_OWNER_SEARCH_ATTRIBUTE_PATCH,
     DSLWorkflow,
-    _child_failures_application_error,
-    _workflow_application_error,
+    _raise_child_failures_application_error,
+    _raise_workflow_application_error,
 )
 from tracecat.runtime.errors import (
     ErrorEnvelope,
@@ -33,9 +32,9 @@ from tracecat.runtime.errors import (
     RuntimeErrorOwner,
 )
 from tracecat.temporal.errors import (
-    application_error_from_envelope,
     extract_error_envelope,
     extract_error_envelopes,
+    raise_application_error_from_envelope,
 )
 from tracecat.temporal.exceptions import UserError
 from tracecat.workflow.executions.enums import TemporalSearchAttr
@@ -59,15 +58,43 @@ def _prepare_subflow_input() -> PrepareSubflowActivityInput:
     )
 
 
-def _classified_error_info(
-    envelope: ErrorEnvelope, *, ref: str
-) -> ClassifiedActionErrorInfo:
-    return ClassifiedActionErrorInfo(
+def _classified_error_info(envelope: ErrorEnvelope, *, ref: str) -> ActionErrorInfo:
+    return ActionErrorInfo(
         ref=ref,
         message=envelope.message,
         type=envelope.cause_type or "ApplicationError",
         envelope=envelope,
     )
+
+
+def _capture_application_error(
+    envelope: ErrorEnvelope,
+    *details: object,
+) -> ApplicationError:
+    with pytest.raises(ApplicationError) as exc_info:
+        raise_application_error_from_envelope(envelope, *details)
+    return exc_info.value
+
+
+def _capture_workflow_application_error(
+    task_exceptions: dict[str, TaskExceptionInfo],
+) -> ApplicationError:
+    with pytest.raises(ApplicationError) as exc_info:
+        _raise_workflow_application_error(task_exceptions)
+    return exc_info.value
+
+
+def _capture_child_failures_application_error(
+    *,
+    task_ref: str,
+    failures: list[tuple[int, BaseException]],
+) -> ApplicationError:
+    with pytest.raises(ApplicationError) as exc_info:
+        _raise_child_failures_application_error(
+            task_ref=task_ref,
+            failures=failures,
+        )
+    return exc_info.value
 
 
 def test_scheduler_adapts_non_action_envelope_to_classified_error_info() -> None:
@@ -77,7 +104,7 @@ def test_scheduler_adapts_non_action_envelope_to_classified_error_info() -> None
         retry_disposition=RetryDisposition.RETRYABLE,
         cause=RuntimeError("storage transport unavailable"),
     )
-    error = application_error_from_envelope(envelope)
+    error = _capture_application_error(envelope)
 
     detail = _classified_action_error_info(
         error,
@@ -119,7 +146,6 @@ async def test_prepare_subflow_platform_failure_is_classified_and_history_safe()
     assert error.__cause__ is None
 
     detail = ActionErrorInfoAdapter.validate_python(error.details[0])
-    assert isinstance(detail, ClassifiedActionErrorInfo)
     assert detail.envelope == envelope
 
     failure = Failure()
@@ -160,7 +186,7 @@ async def test_prepare_subflow_keeps_existing_classification_authoritative() -> 
         message="The action failed",
         retry_disposition=RetryDisposition.RETRYABLE,
     )
-    original_error = application_error_from_envelope(original_envelope)
+    original_error = _capture_application_error(original_envelope)
 
     with (
         patch(
@@ -230,18 +256,16 @@ def test_workflow_error_preserves_all_action_envelopes() -> None:
     platform_detail = _classified_error_info(platform_envelope, ref="platform_action")
     task_exceptions = {
         "user_action": TaskExceptionInfo(
-            exception=application_error_from_envelope(user_envelope, user_detail),
+            exception=_capture_application_error(user_envelope, user_detail),
             details=user_detail,
         ),
         "platform_action": TaskExceptionInfo(
-            exception=application_error_from_envelope(
-                platform_envelope, platform_detail
-            ),
+            exception=_capture_application_error(platform_envelope, platform_detail),
             details=platform_detail,
         ),
     }
 
-    error = _workflow_application_error(task_exceptions)
+    error = _capture_workflow_application_error(task_exceptions)
 
     assert error.message == user_envelope.message
     assert error.non_retryable is True
@@ -267,13 +291,13 @@ def test_workflow_error_preserves_all_envelopes_from_one_aggregate() -> None:
     )
     user_detail = _classified_error_info(user_envelope, ref="fanout[0]")
     platform_detail = _classified_error_info(platform_envelope, ref="fanout[1]")
-    aggregate_error = application_error_from_envelope(
+    aggregate_error = _capture_application_error(
         user_envelope,
         user_detail,
         platform_detail,
     )
 
-    error = _workflow_application_error(
+    error = _capture_workflow_application_error(
         {
             "fanout": TaskExceptionInfo(
                 exception=aggregate_error,
@@ -291,17 +315,16 @@ def test_child_failure_aggregate_is_terminal_and_keeps_loop_indexes() -> None:
         message="Tracecat could not execute the action",
         retry_disposition=RetryDisposition.RETRYABLE,
     )
-    child_error = application_error_from_envelope(platform_envelope)
+    child_error = _capture_application_error(platform_envelope)
 
-    error = _child_failures_application_error(
+    error = _capture_child_failures_application_error(
         task_ref="fanout",
         failures=[(7, child_error)],
     )
 
-    assert error is not None
     assert error.non_retryable is True
     aggregate = ActionErrorInfoAdapter.validate_python(error.details[0])
-    assert isinstance(aggregate, ClassifiedActionErrorInfo)
+    assert aggregate.envelope is not None
     assert aggregate.children is not None
     assert [child.ref for child in aggregate.children] == ["fanout[7]"]
     assert {
@@ -314,7 +337,7 @@ def test_child_failure_aggregate_is_terminal_and_keeps_loop_indexes() -> None:
 
 def test_legacy_workflow_error_shape_is_unchanged() -> None:
     detail = ActionErrorInfo(ref="action", message="Failed", type="ValueError")
-    error = _workflow_application_error(
+    error = _capture_workflow_application_error(
         {
             "action": TaskExceptionInfo(
                 exception=ApplicationError("Failed", non_retryable=True),
@@ -373,7 +396,7 @@ def test_terminal_owner_upsert_is_replay_gated() -> None:
         message="The action failed",
         retry_disposition=RetryDisposition.NON_RETRYABLE,
     )
-    error = application_error_from_envelope(envelope)
+    error = _capture_application_error(envelope)
 
     with (
         patch(

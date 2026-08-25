@@ -4,7 +4,7 @@ import asyncio
 import threading
 import weakref
 from collections.abc import Callable, Coroutine, Mapping
-from typing import Any, cast
+from typing import Any, Never, cast
 
 import dateparser
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
@@ -39,8 +39,6 @@ from tracecat.dsl.schemas import (
 from tracecat.dsl.types import (
     ActionErrorInfo,
     ActionErrorInfoAdapter,
-    ActionErrorInfoVariant,
-    ClassifiedActionErrorInfo,
 )
 from tracecat.dsl.validation import normalize_trigger_inputs
 from tracecat.exceptions import TracecatExpressionError, TracecatValidationError
@@ -81,8 +79,8 @@ from tracecat.storage.object import (
 from tracecat.storage.utils import is_retryable_storage_transport_error
 from tracecat.temporal.errors import (
     activity_error_boundary,
-    application_error_from_envelope,
     extract_error_envelope,
+    raise_application_error_from_envelope,
 )
 from tracecat.temporal.exceptions import UserError
 from tracecat.validation.schemas import ValidationDetail
@@ -209,7 +207,7 @@ class FinalizeGatherActivityInput(BaseModel):
 class FinalizeGatherActivityResult(BaseModel):
     result: StoredObject
     """Result collection. CollectionObject if externalized, else InlineObject."""
-    errors: list[ActionErrorInfoVariant] = Field(default_factory=list)
+    errors: list[ActionErrorInfo] = Field(default_factory=list)
 
 
 class BuildAgentArgsActivityInput(BaseModel):
@@ -673,7 +671,7 @@ class DSLActivities:
             values = [v for v in values if v is not None]
 
         results: list[Any] = []
-        errors: list[ActionErrorInfoVariant] = []
+        errors: list[ActionErrorInfo] = []
         match input.error_strategy:
             case StreamErrorHandlingStrategy.PARTITION:
                 results, errors = _partition_errors(values)
@@ -849,11 +847,11 @@ class DSLActivities:
                     error=error,
                     ref=input.task.ref,
                 )
-            raise _classified_subflow_application_error(
+            _raise_classified_subflow_application_error(
                 input=input,
                 error=error,
                 envelope=envelope,
-            ) from None
+            )
 
 
 def _subflow_error_envelope(error: Exception) -> ErrorEnvelope:
@@ -881,13 +879,13 @@ def _subflow_error_envelope(error: Exception) -> ErrorEnvelope:
     )
 
 
-def _classified_subflow_application_error(
+def _raise_classified_subflow_application_error(
     *,
     input: PrepareSubflowActivityInput,
     error: BaseException,
     envelope: ErrorEnvelope,
-) -> ApplicationError:
-    """Build a history-safe classified failure for subflow preparation."""
+) -> Never:
+    """Raise a history-safe classified failure for subflow preparation."""
     if isinstance(error, ApplicationError):
         error_type = error.type or type(error).__name__
         legacy_details = tuple(error.details)
@@ -897,13 +895,13 @@ def _classified_subflow_application_error(
         legacy_details = ()
         next_retry_delay = None
 
-    detail = ClassifiedActionErrorInfo(
+    detail = ActionErrorInfo(
         ref=input.task.ref,
         message=envelope.message,
         type=error_type,
         envelope=envelope,
     )
-    return application_error_from_envelope(
+    raise_application_error_from_envelope(
         envelope,
         detail,
         *legacy_details,
@@ -951,9 +949,9 @@ def _patch_object(
 
 def _partition_errors(
     items: list[Any],
-) -> tuple[list[Any], list[ActionErrorInfoVariant]]:
+) -> tuple[list[Any], list[ActionErrorInfo]]:
     results: list[Any] = []
-    errors: list[ActionErrorInfoVariant] = []
+    errors: list[ActionErrorInfo] = []
     for item in items:
         if info := _as_error_info(item):
             errors.append(info)
@@ -974,7 +972,7 @@ def _is_error_info(detail: Any) -> bool:
         return False
 
 
-def _as_error_info(detail: Any) -> ActionErrorInfoVariant | None:
+def _as_error_info(detail: Any) -> ActionErrorInfo | None:
     try:
         return ActionErrorInfoAdapter.validate_python(detail)
     except Exception:
