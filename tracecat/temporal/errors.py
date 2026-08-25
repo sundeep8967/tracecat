@@ -9,10 +9,7 @@ from typing import Any, Literal, Never
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from temporalio.exceptions import ApplicationError, FailureError
 
-from tracecat.dsl.types import (
-    ActionErrorInfo,
-    ActionErrorInfoAdapter,
-)
+from tracecat.dsl.types import ActionErrorInfo
 from tracecat.runtime.errors import (
     ErrorEnvelope,
     RetryDisposition,
@@ -168,9 +165,7 @@ def _serialized_error_details(
                 children=detail.children,
                 envelope=detail.envelope or envelope,
             )
-            serialized.append(
-                ActionErrorInfoAdapter.dump_python(classified, mode="json")
-            )
+            serialized.append(classified.model_dump(mode="json"))
             changed = True
         else:
             serialized.append(detail)
@@ -200,7 +195,7 @@ def _envelopes_from_detail(detail: Any) -> tuple[ErrorEnvelope, ...]:
             return ()
 
     try:
-        parsed = ActionErrorInfoAdapter.validate_python(detail)
+        parsed = ActionErrorInfo.model_validate(detail)
     except ValidationError:
         pass
     else:
@@ -212,7 +207,7 @@ def _envelopes_from_detail(detail: Any) -> tuple[ErrorEnvelope, ...]:
     envelopes: list[ErrorEnvelope] = []
     for value in detail.values():
         try:
-            parsed = ActionErrorInfoAdapter.validate_python(value)
+            parsed = ActionErrorInfo.model_validate(value)
         except ValidationError:
             return ()
         for envelope in _envelopes_from_detail(parsed):

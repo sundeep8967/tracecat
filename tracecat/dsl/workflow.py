@@ -98,7 +98,6 @@ with workflow.unsafe.imports_passed_through():
     )
     from tracecat.dsl.types import (
         ActionErrorInfo,
-        ActionErrorInfoAdapter,
         TaskExceptionInfo,
     )
     from tracecat.dsl.validation import format_input_schema_validation_error
@@ -196,7 +195,7 @@ def _raise_workflow_application_error(
     )
     if primary_envelope is not None:
         error_details = {
-            ref: ActionErrorInfoAdapter.dump_python(info.details, mode="json")
+            ref: info.details.model_dump(mode="json")
             for ref, info in task_exceptions.items()
         }
         raise_application_error_from_envelope(
@@ -494,7 +493,7 @@ class DSLWorkflow:
                     ]
                 else:
                     errors = [
-                        ActionErrorInfoAdapter.validate_python(data)
+                        ActionErrorInfo.model_validate(data)
                         for data in err_info_map.values()
                     ]
             else:
