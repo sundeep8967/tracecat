@@ -5,7 +5,7 @@ import re
 import uuid
 from collections.abc import Awaitable, Coroutine, Mapping
 from datetime import UTC, datetime, timedelta
-from typing import Any
+from typing import Any, Never
 
 from temporalio import workflow
 from temporalio.common import (
@@ -131,9 +131,9 @@ with workflow.unsafe.imports_passed_through():
         trigger_key,
     )
     from tracecat.temporal.errors import (
-        application_error_from_envelope,
         extract_error_envelope,
         extract_error_envelopes,
+        raise_application_error_from_envelope,
     )
     from tracecat.temporal.exceptions import UserError
     from tracecat.tiers.activities import (
@@ -181,10 +181,10 @@ ACTION_HEARTBEAT_TIMEOUT_RETRY_PATCH = "dsl-action-heartbeat-timeout-retry-v1"
 ERROR_OWNER_SEARCH_ATTRIBUTE_PATCH = "dsl-error-owner-search-attribute-v1"
 
 
-def _workflow_application_error(
+def _raise_workflow_application_error(
     task_exceptions: Mapping[str, TaskExceptionInfo],
-) -> ApplicationError:
-    """Build the terminal workflow error without changing legacy payloads."""
+) -> Never:
+    """Raise the terminal workflow error without changing legacy payloads."""
     n_exceptions = len(task_exceptions)
     primary_envelope = next(
         (
@@ -199,7 +199,7 @@ def _workflow_application_error(
             ref: ActionErrorInfoAdapter.dump_python(info.details, mode="json")
             for ref, info in task_exceptions.items()
         }
-        return application_error_from_envelope(
+        raise_application_error_from_envelope(
             primary_envelope,
             error_details,
         )
@@ -209,12 +209,12 @@ def _workflow_application_error(
         for i, (ref, info) in enumerate(task_exceptions.items())
         if (details := info.details)
     )
-    return ApplicationError(
+    raise ApplicationError(
         f"Workflow failed with {n_exceptions} error(s)\n\n{formatted_exceptions}",
         {ref: info.details for ref, info in task_exceptions.items()},
         non_retryable=True,
         type=ApplicationError.__name__,
-    )
+    ) from None
 
 
 def _inherit_search_attributes_with_alias(
@@ -718,7 +718,7 @@ class DSLWorkflow:
 
         if task_exceptions:
             # NOTE: This error is shown in the final activity in the workflow history
-            raise _workflow_application_error(task_exceptions)
+            _raise_workflow_application_error(task_exceptions)
 
         try:
             self.logger.info("DSL workflow completed")

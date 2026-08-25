@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Iterator, Mapping, Sequence
 from datetime import timedelta
-from typing import Any, Literal
+from typing import Any, Literal, Never
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from temporalio.exceptions import ApplicationError, FailureError
@@ -12,7 +12,6 @@ from temporalio.exceptions import ApplicationError, FailureError
 from tracecat.dsl.types import (
     ActionErrorInfo,
     ActionErrorInfoAdapter,
-    ClassifiedActionErrorInfo,
 )
 from tracecat.runtime.errors import (
     ErrorEnvelope,
@@ -36,7 +35,7 @@ class TemporalErrorDetails(BaseModel):
     envelope: ErrorEnvelope
 
 
-def application_error_from_envelope(
+def _application_error_from_envelope(
     envelope: ErrorEnvelope,
     *details: Any,
     next_retry_delay: timedelta | None = None,
@@ -76,13 +75,31 @@ def application_error_from_envelope(
     )
 
 
-def wrap_application_error(
+def raise_application_error_from_envelope(
+    envelope: ErrorEnvelope,
+    *details: Any,
+    next_retry_delay: timedelta | None = None,
+) -> Never:
+    """Raise a classified error without serializing the active exception context.
+
+    Temporal serializes exception chains into workflow history. Owning the raise
+    here ensures callers cannot accidentally attach a sensitive caught exception
+    through implicit chaining.
+    """
+    raise _application_error_from_envelope(
+        envelope,
+        *details,
+        next_retry_delay=next_retry_delay,
+    ) from None
+
+
+def raise_wrapped_application_error(
     error: BaseException,
     *,
     fallback: ErrorEnvelope,
     details: Sequence[Any] = (),
-) -> ApplicationError:
-    """Wrap an exception while preserving any existing classification."""
+) -> Never:
+    """Raise a history-safe wrapper while preserving existing classification."""
     envelope = extract_error_envelope(error) or fallback
     if isinstance(error, ApplicationError):
         wrapped_details = tuple(error.details) if not details else tuple(details)
@@ -91,7 +108,7 @@ def wrap_application_error(
         wrapped_details = tuple(details)
         next_retry_delay = None
 
-    return application_error_from_envelope(
+    raise_application_error_from_envelope(
         envelope,
         *wrapped_details,
         next_retry_delay=next_retry_delay,
@@ -135,14 +152,13 @@ def _serialized_error_details(
     serialized: list[Any] = []
     changed = False
     for detail in details:
-        if isinstance(detail, ClassifiedActionErrorInfo):
-            serialized.append(ActionErrorInfoAdapter.dump_python(detail, mode="json"))
-            changed = True
-        elif isinstance(detail, TemporalErrorDetails):
+        if isinstance(detail, TemporalErrorDetails):
             serialized.append(detail.model_dump(mode="json"))
             changed = True
-        elif isinstance(detail, ActionErrorInfo) and envelope is not None:
-            classified = ClassifiedActionErrorInfo(
+        elif isinstance(detail, ActionErrorInfo) and (
+            detail.envelope is not None or envelope is not None
+        ):
+            classified = ActionErrorInfo(
                 ref=detail.ref,
                 message=detail.message,
                 type=detail.type,
@@ -150,7 +166,7 @@ def _serialized_error_details(
                 attempt=detail.attempt,
                 stream_id=detail.stream_id,
                 children=detail.children,
-                envelope=envelope,
+                envelope=detail.envelope or envelope,
             )
             serialized.append(
                 ActionErrorInfoAdapter.dump_python(classified, mode="json")
@@ -162,14 +178,10 @@ def _serialized_error_details(
 
 
 def _envelopes_from_detail(detail: Any) -> tuple[ErrorEnvelope, ...]:
-    if isinstance(detail, ClassifiedActionErrorInfo):
-        envelopes = [detail.envelope]
-        for child in detail.children or ():
-            for envelope in _envelopes_from_detail(child):
-                _append_unique_envelope(envelopes, envelope)
-        return tuple(envelopes)
     if isinstance(detail, ActionErrorInfo):
         nested_envelopes: list[ErrorEnvelope] = []
+        if detail.envelope is not None:
+            _append_unique_envelope(nested_envelopes, detail.envelope)
         for child in detail.children or ():
             for envelope in _envelopes_from_detail(child):
                 _append_unique_envelope(nested_envelopes, envelope)
@@ -187,19 +199,22 @@ def _envelopes_from_detail(detail: Any) -> tuple[ErrorEnvelope, ...]:
         except ValidationError:
             return ()
 
-    if envelope := parse_error_envelope(detail.get("envelope")):
-        return (envelope,)
+    try:
+        parsed = ActionErrorInfoAdapter.validate_python(detail)
+    except ValidationError:
+        pass
+    else:
+        return _envelopes_from_detail(parsed)
 
     # Workflow-level action failures retain the established ``{ref: info}``
-    # details shape. Validate each complete value as ActionErrorInfo rather than
-    # recursively searching arbitrary mappings, which would allow user payload
-    # keys to collide with the envelope contract.
+    # details shape. Every value must be a complete ActionErrorInfo; accepting a
+    # partial match would let arbitrary user payloads override classification.
     envelopes: list[ErrorEnvelope] = []
     for value in detail.values():
         try:
             parsed = ActionErrorInfoAdapter.validate_python(value)
         except ValidationError:
-            continue
+            return ()
         for envelope in _envelopes_from_detail(parsed):
             _append_unique_envelope(envelopes, envelope)
     return tuple(envelopes)
