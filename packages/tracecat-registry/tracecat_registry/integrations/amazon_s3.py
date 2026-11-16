@@ -256,42 +256,42 @@ async def copy_objects(
     results = []
 
     async with session.client("s3", endpoint_url=endpoint_url) as s3_client:
-        # List objects with prefix
-        response = await s3_client.list_objects_v2(Bucket=src_bucket, Prefix=prefix)
+        paginator = s3_client.get_paginator("list_objects_v2")
+        pages = paginator.paginate(Bucket=src_bucket, Prefix=prefix)
 
-        if "Contents" not in response:
-            return []
-
-        # Copy all objects and collect results
-        for obj in response["Contents"]:
-            key = obj.get("Key")
-            if not key:
+        async for page in pages:
+            if "Contents" not in page:
                 continue
 
-            try:
-                copy_source = f"{src_bucket}/{key}"
-                copy_response = await s3_client.copy_object(
-                    CopySource=copy_source, Bucket=dst_bucket, Key=key
-                )
-                # Create a new dict with response data plus metadata
-                result = {
-                    **copy_response,
-                    "Key": key,
-                    "SourceBucket": src_bucket,
-                    "DestinationBucket": dst_bucket,
-                }
-                results.append(result)
-            except Exception as e:
-                # Include failed operations in results with error info
-                results.append(
-                    {
+            for obj in page["Contents"]:
+                key = obj.get("Key")
+                if not key:
+                    continue
+
+                try:
+                    copy_source = f"{src_bucket}/{key}"
+                    copy_response = await s3_client.copy_object(
+                        CopySource=copy_source, Bucket=dst_bucket, Key=key
+                    )
+                    # Create a new dict with response data plus metadata
+                    result = {
+                        **copy_response,
                         "Key": key,
                         "SourceBucket": src_bucket,
                         "DestinationBucket": dst_bucket,
-                        "Error": str(e),
-                        "Success": False,
                     }
-                )
+                    results.append(result)
+                except Exception as e:
+                    # Include failed operations in results with error info
+                    results.append(
+                        {
+                            "Key": key,
+                            "SourceBucket": src_bucket,
+                            "DestinationBucket": dst_bucket,
+                            "Error": str(e),
+                            "Success": False,
+                        }
+                    )
 
     return results
 
